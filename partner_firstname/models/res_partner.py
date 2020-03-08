@@ -130,7 +130,7 @@ class ResPartner(models.Model):
         Removes leading, trailing and duplicated whitespace.
         """
         if name:
-            name = u" ".join(name.split(None))
+            name = u" ".join(name.decode('utf-8').split(None))
             if comma:
                 name = name.replace(" ,", ",")
                 name = name.replace(", ", ",")

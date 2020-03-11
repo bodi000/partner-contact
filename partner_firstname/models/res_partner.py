@@ -8,7 +8,6 @@ import logging
 from openerp import api, fields, models
 from .. import exceptions
 
-
 _logger = logging.getLogger(__name__)
 
 
@@ -16,8 +15,8 @@ class ResPartner(models.Model):
     """Adds last name and first name; name becomes a stored function field."""
     _inherit = 'res.partner'
 
-    firstname = fields.Char("First name")
-    lastname = fields.Char("Last name")
+    firstname = fields.Char("First name", index=True)
+    lastname = fields.Char("Last name", index=True)
     name = fields.Char(
         compute="_compute_name",
         inverse="_inverse_name_after_cleaning_whitespace",
@@ -64,13 +63,16 @@ class ResPartner(models.Model):
         """Invert name when getting default values."""
         result = super(ResPartner, self).default_get(fields_list)
 
+        if not result.get('name'):
+            return result
+
         inverted = self._get_inverse_name(
-            self._get_whitespace_cleaned_name(result.get("name", "")),
+            self._get_whitespace_cleaned_name(result["name"]),
             result.get("is_company", False))
 
-        for field in inverted.keys():
-            if field in fields_list:
-                result[field] = inverted.get(field)
+        for field in inverted:
+            if field in fields_list and field not in result:
+                result[field] = inverted[field]
 
         return result
 
@@ -99,29 +101,33 @@ class ResPartner(models.Model):
         else:
             return u" ".join((p for p in (lastname, firstname) if p))
 
-    @api.one
+    @api.multi
     @api.depends("firstname", "lastname")
     def _compute_name(self):
-        """Write the 'name' field according to splitted data."""
-        self.name = self._get_computed_name(self.lastname, self.firstname)
+        """Write the 'name' field according to split data."""
+        for record in self:
+            record.name = record._get_computed_name(
+                record.lastname, record.firstname,
+            )
 
-    @api.one
+    @api.multi
     def _inverse_name_after_cleaning_whitespace(self):
         """Clean whitespace in :attr:`~.name` and split it.
 
         The splitting logic is stored separately in :meth:`~._inverse_name`, so
         submodules can extend that method and get whitespace cleaning for free.
         """
-        # Remove unneeded whitespace
-        clean = self._get_whitespace_cleaned_name(self.name)
+        for record in self:
+            # Remove unneeded whitespace
+            clean = record._get_whitespace_cleaned_name(record.name)
 
-        # Clean name avoiding infinite recursion
-        if self.name != clean:
-            self.name = clean
+            # Clean name avoiding infinite recursion
+            if record.name != clean:
+                record.name = clean
 
-        # Save name in the real fields
-        else:
-            self._inverse_name()
+            # Save name in the real fields
+            else:
+                record._inverse_name()
 
     @api.model
     def _get_whitespace_cleaned_name(self, name, comma=False):
@@ -129,11 +135,20 @@ class ResPartner(models.Model):
 
         Removes leading, trailing and duplicated whitespace.
         """
-        if name:
-            name = u" ".join(name.decode('utf-8').split(None))
-            if comma:
-                name = name.replace(" ,", ",")
-                name = name.replace(", ", ",")
+        try:
+            name = u" ".join(name.split()) if name else name
+        except UnicodeDecodeError:
+            # with users coming from LDAP, name can be a str encoded as utf-8
+            # this happens with ActiveDirectory for instance, and in that case
+            # we get a UnicodeDecodeError during the automatic ASCII -> Unicode
+            # conversion that Python does for us.
+            # In that case we need to manually decode the string to get a
+            # proper unicode string.
+            name = u' '.join(name.decode('utf-8').split()) if name else name
+
+        if comma:
+            name = name.replace(" ,", ",")
+            name = name.replace(", ", ",")
         return name
 
     @api.model
@@ -170,21 +185,25 @@ class ResPartner(models.Model):
                     parts.append(False)
         return {"lastname": parts[0], "firstname": parts[1]}
 
-    @api.one
+    @api.multi
     def _inverse_name(self):
         """Try to revert the effect of :meth:`._compute_name`."""
-        parts = self._get_inverse_name(self.name, self.is_company)
-        self.lastname, self.firstname = parts["lastname"], parts["firstname"]
+        for record in self:
+            parts = record._get_inverse_name(record.name, record.is_company)
+            record.lastname = parts['lastname']
+            record.firstname = parts['firstname']
 
-    @api.one
+    @api.multi
     @api.constrains("firstname", "lastname")
     def _check_name(self):
         """Ensure at least one name is set."""
-        if ((self.type == 'contact' or self.is_company) and
-                not (self.firstname or self.lastname)):
-            raise exceptions.EmptyNamesError(self)
+        for record in self:
+            if all((
+                record.type == 'contact' or record.is_company,
+                not (record.firstname or record.lastname)
+            )):
+                raise exceptions.EmptyNamesError(record)
 
-    @api.one
     @api.onchange("firstname", "lastname")
     def _onchange_subnames(self):
         """Avoid recursion when the user changes one of these fields.
@@ -196,7 +215,6 @@ class ResPartner(models.Model):
         # See https://github.com/odoo/odoo/issues/7472#issuecomment-119503916.
         self.env.context = self.with_context(skip_onchange=True).env.context
 
-    @api.one
     @api.onchange("name")
     def _onchange_name(self):
         """Ensure :attr:`~.name` is inverted in the UI."""
@@ -222,6 +240,22 @@ class ResPartner(models.Model):
         # Force calculations there
         records._inverse_name()
         _logger.info("%d partners updated installing module.", len(records))
+
+    @api.multi
+    def onchange(self, values, field_name, field_onchange):
+        """when one of our name fields is changed, suppress updates to the
+        connected user's (user_ids) name, as this in turn would cause another
+        write on the partner's name, with possible mistakes in parsing the
+        parts"""
+        if field_name in getattr(self._compute_name, '_depends', {}):
+            field_onchange = {
+                field_path: value
+                for field_path, value in field_onchange.iteritems()
+                if field_path != 'user_ids.name'
+            }
+        return super(ResPartner, self).onchange(
+            values, field_name, field_onchange,
+        )
 
     # Disabling SQL constraint givint a more explicit error using a Python
     # contstraint

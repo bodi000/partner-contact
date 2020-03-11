@@ -7,10 +7,11 @@
 {
     'name': 'Partner first name and last name',
     'summary': "Split first name and last name for non company partners",
-    'version': '9.0.2.0.0',
+    'version': '9.0.2.1.1',
     'author': "Camptocamp, "
               "Grupo ESOC Ingeniería de Servicios, "
               "Tecnativa, "
+              "LasLabs, "
               "ACSONE SA/NV, "
               "Odoo Community Association (OCA)",
     'license': "AGPL-3",
@@ -18,11 +19,11 @@
     'category': 'Extra Tools',
     'website': 'https://odoo-community.org',
     'depends': ['base_setup'],
+    'post_init_hook': 'post_init_hook',
     'data': [
         'views/base_config_view.xml',
         'views/res_partner.xml',
         'views/res_user.xml',
-        'data/res_partner.yml',
     ],
     'demo': [],
     'test': [],
